@@ -14,18 +14,39 @@ import { ActionTypes } from 'core/util/actionTypes';
 import { IKeyPair } from 'shared/util/ed';
 import SharedTransactionRepo from 'shared/repository/transaction';
 import TransactionQueue from 'core/service/transactionQueue';
+import { VersionChecker } from 'core/util/versionChecker';
+import { PeerAddress } from 'shared/model/types';
+import PeerMemoryRepository from 'core/repository/peer/peerMemory';
 
 interface BlockGenerateRequest {
     keyPair: IKeyPair;
     timestamp: number;
 }
 
+type BlockReceiveData = {
+    data: BlockModel,
+    peerAddress: PeerAddress
+};
+
+const BYTE_SEND_VERSION = '1.2.6';
+const versionChecker = new VersionChecker(BYTE_SEND_VERSION);
+
+
 class BlockController extends BaseController {
 
     @MAIN(ActionTypes.BLOCK_RECEIVE)
-    public async onReceiveBlock({ data }: { data: { block: BlockModel } }): Promise<ResponseEntity<void>> {
+    public async onReceiveBlock(response: BlockReceiveData | any): Promise<ResponseEntity<void>> {
 
-        const validateResponse = BlockService.validate(data.block);
+        const peerVersion = PeerMemoryRepository.getVersion(response.peerAddress);
+
+        let block;
+        if (!versionChecker.isAcceptable(peerVersion)) {
+            block = response.data.block;
+        } else {
+            block = response.data;
+        }
+
+        const validateResponse = BlockService.validate(block);
         if (!validateResponse.success) {
             return new ResponseEntity<void>({
                 errors: [
@@ -34,10 +55,15 @@ class BlockController extends BaseController {
             });
         }
 
-        const receivedBlock = new Block(data.block);
-        receivedBlock.transactions = receivedBlock.transactions.map(
-            trs => SharedTransactionRepo.deserialize(trs)
-        );
+        const receivedBlock = new Block(block);
+
+        // TODO delete after migration
+        if (!versionChecker.isAcceptable(peerVersion)) {
+            receivedBlock.transactions = receivedBlock.transactions.map(
+                trs => SharedTransactionRepo.deserialize(trs)
+            );
+        }
+
         let lastBlock = BlockRepository.getLastBlock();
 
         const validateReceivedBlockResponse = BlockService.validateReceivedBlock(lastBlock, receivedBlock);

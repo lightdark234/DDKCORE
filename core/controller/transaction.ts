@@ -1,7 +1,7 @@
 import { ON } from 'core/util/decorator';
 import { BaseController } from 'core/controller/baseController';
 import { logger } from 'shared/util/logger';
-import { IAsset, SerializedTransaction } from 'shared/model/transaction';
+import { IAsset, SerializedTransaction, Transaction } from 'shared/model/transaction';
 import TransactionQueue from 'core/service/transactionQueue';
 import TransactionService from 'core/service/transaction';
 import TransactionPool from 'core/service/transactionPool';
@@ -13,32 +13,53 @@ import { ResponseEntity } from 'shared/model/response';
 import { CreateTransactionParams } from 'core/controller/types';
 import config from 'shared/config';
 import { ActionTypes } from 'core/util/actionTypes';
+import { VersionChecker } from 'core/util/versionChecker';
+import { BlockModel } from 'shared/model/block';
+import { PeerAddress } from 'shared/model/types';
+import PeerMemoryRepository from 'core/repository/peer/peerMemory';
+
+const BYTE_SEND_VERSION = '1.2.6';
+const versionChecker = new VersionChecker(BYTE_SEND_VERSION);
+
+type TransactionReceiveData = {
+    data: Transaction<IAsset>,
+    peerAddress: PeerAddress
+};
 
 class TransactionController extends BaseController {
 
     @ON(ActionTypes.TRANSACTION_RECEIVE)
-    public onReceiveTransaction({ data } : { data: { trs: SerializedTransaction<IAsset> } }): void {
-        const trs = SharedTransactionRepo.deserialize(data.trs);
-        const validateResult = TransactionService.validate(trs);
+    public onReceiveTransaction(response: TransactionReceiveData | any): void {
+
+        const peerVersion = PeerMemoryRepository.getVersion(response.peerAddress);
+        let transaction;
+
+        if (!versionChecker.isAcceptable(peerVersion)) {
+            transaction = SharedTransactionRepo.deserialize(response.data.trs);
+        } else {
+            transaction = response.data;
+        }
+
+        const validateResult = TransactionService.validate(transaction);
         if (!validateResult.success) {
             return;
         }
 
-        if (TransactionPool.has(trs)) {
+        if (TransactionPool.has(transaction)) {
             return;
         }
 
-        const sender: Account = AccountRepo.getByAddress(trs.senderAddress);
+        const sender: Account = AccountRepo.getByAddress(transaction.senderAddress);
         if (!sender) {
             AccountRepo.add({
-                publicKey: trs.senderPublicKey,
-                address: trs.senderAddress
+                publicKey: transaction.senderPublicKey,
+                address: transaction.senderAddress
             });
         } else if (!sender.publicKey) {
-            sender.publicKey = trs.senderPublicKey;
+            sender.publicKey = transaction.senderPublicKey;
         }
 
-        TransactionQueue.push(trs);
+        TransactionQueue.push(transaction);
     }
 
     // TODO: extract this somewhere and make it async
